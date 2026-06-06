@@ -3,17 +3,18 @@ name = "orbit-propagator"
 version = "0.1.0"
 description = "Compute satellite GCRF and ITRF state vectors from CSV timestamps and historical TLEs."
 authors = ["Aldo Aguilar <aldo.aguilar@berkeley.edu>"]
+license = "MIT"
 readme = "README.md"
 packages = [{ include = "orbit_propagator" }]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.14"
-pandas = ">=2.2"
-requests = ">=2.32"
+python = ">=3.11,<3.14"
+numpy = ">=1.26"
+pandas = ">=2.0"
+requests = ">=2.31"
+python-dotenv = ">=1.0"
 sgp4 = ">=2.23"
 astropy = ">=7.0"
-numpy = ">=1.26"
-python-dotenv = ">=1.0"
 
 [tool.poetry.scripts]
 orbit-propagator = "orbit_propagator.main:main"

@@ -14,6 +14,7 @@ Positions are in km and velocities are in km/s.
 ```text
 orbit-propagator/
 ├── pyproject.toml
+├── LICENSE
 ├── README.md
 ├── .env.example
 └── orbit_propagator/
