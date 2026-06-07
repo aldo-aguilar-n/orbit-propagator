@@ -1,6 +1,6 @@
 # Orbit Propagator
 
-Poetry-managed command-line app that reads a CSV with UTC timestamps, fetches historical TLEs for a NORAD catalog ID, propagates the satellite with SGP4, and writes GCRF/GCRS and ITRF/ITRS state vectors to a CSV.
+Poetry-managed command-line app that reads a CSV with UTC timestamps, fetches historical TLEs for a NORAD catalog ID, propagates the satellite with SGP4, and writes geodetic coordinates, GCRF/GCRS and ITRF/ITRS state vectors to a CSV.
 
 SGP4 natively propagates TLEs in TEME. This app uses TEME only as an intermediate frame and then uses Astropy to transform the state into:
 
