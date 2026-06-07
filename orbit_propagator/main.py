@@ -3,12 +3,13 @@ Title: main.py
 Authors: Aldo Aguilar
 Date: 2026-06-06
 Description: Entry point for the orbit-propagator app. This app reads a
-CSV of UTC timestamps and a NORAD catalog ID, then computes GCRF/GCRS
-and ITRF/ITRS position/velocity coordinates at each timestamp using the
-SGP4 propagator with the closest-epoch TLE for the NORAD ID. The TLEs
-are fetched from Space-Track GP_History or, if credentials are not
-available, the latest CelesTrak GP/TLE. The output is a CSV with the
-original timestamps plus the computed coordinates and velocities.
+CSV of UTC timestamps and a NORAD catalog ID, then computes GCRF/GCRS,
+ITRF/ITRS position/velocity coordinates, as well as geodetic coordinates
+(lat/lon/height) at each timestamp using the SGP4 propagator with the
+closest-epoch TLE for the NORAD ID. The TLEs are fetched from
+Space-Track GP_History or, if credentials are not available, the latest
+CelesTrak GP/TLE. The output is a CSV with the original timestamps plus
+the computed coordinates and velocities. 
 
 Inputs:
     - CSV containing a UTC ISO-8601 timestamp
@@ -16,8 +17,9 @@ Inputs:
     - NORAD catalog ID
 
 Outputs:
-    - A CSV containing the original UTC timestamp column plus GCRF/GCRS
-      and ITRF/ITRS position/velocity coordinates at each timestamp.
+    - A CSV containing the original UTC timestamp column plus GCRF/GCRS,
+      ITRF/ITRS position/velocity coordinates, as well as geodetic
+      coordinates (lat/lon/height) at each timestamp.
 
 Notes:
     - SGP4 propagates TLEs into the TEME frame. This app treats TEME
@@ -26,7 +28,8 @@ Notes:
       celestial/inertial-like output state, and into ITRS for the
       Earth-fixed terrestrial output state. In the output files, GCRS is
       used as the GCRF/ECI-equivalent frame, and ITRS is used as the
-      ITRF/ECEF-equivalent frame.
+      ITRF/ECEF-equivalent frame. Geodetic coordinates are computed from
+      the ITRS/ITRF state.
     - Historical closest-epoch TLE selection requires Space-Track 
       credentials. Create a .env file in the project directory
       containing SPACE_TRACK_IDENTITY and SPACE_TRACK_PASSWORD.
@@ -278,7 +281,7 @@ def propagate_teme_batch(sat: Satrec,
 
 def teme_to_gcrs_and_itrs_batch(r_teme_km: np.ndarray,
                                 v_teme_km_s: np.ndarray,
-                                when_utc: list[datetime]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+                                when_utc: list[datetime]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Transform TEME position/velocity arrays to GCRS/GCRF and ITRS/ITRF.
 
@@ -293,6 +296,9 @@ def teme_to_gcrs_and_itrs_batch(r_teme_km: np.ndarray,
         v_gcrs_km_s: GCRS/GCRF velocity vectors [km/s]
         r_itrs_km: ITRS/ITRF position vectors [km]
         v_itrs_km_s: ITRS/ITRF velocity vectors [km/s]
+        lat_deg: Geodetic latitude values [deg]
+        lon_deg: Geodetic longitude values [deg]
+        height_km: Geodetic height values [km]
     """
     obstime = Time(when_utc)
 
@@ -316,11 +322,19 @@ def teme_to_gcrs_and_itrs_batch(r_teme_km: np.ndarray,
     r_itrs = itrs.cartesian.xyz.to_value(u.km).T
     v_itrs = itrs.cartesian.differentials["s"].d_xyz.to_value(u.km / u.s).T
 
+    earth_location = itrs.earth_location
+    lat_deg = earth_location.lat.to_value(u.deg)
+    lon_deg = earth_location.lon.to_value(u.deg)
+    height_km = earth_location.height.to_value(u.km)
+
     return (
         np.array(r_gcrs, dtype=float),
         np.array(v_gcrs, dtype=float),
         np.array(r_itrs, dtype=float),
         np.array(v_itrs, dtype=float),
+        np.array(lat_deg, dtype=float),
+        np.array(lon_deg, dtype=float),
+        np.array(height_km, dtype=float),
     )
 
 def default_output_path(input_csv: Path) -> Path:
@@ -424,6 +438,9 @@ def compute_states(input_csv: Path,
 
     tle_epoch_out = [""] * n_rows
     tle_age_days_out = np.empty(n_rows, dtype=float)
+    lat_out = np.empty(n_rows, dtype=float)
+    lon_out = np.empty(n_rows, dtype=float)
+    height_out = np.empty(n_rows, dtype=float)
     gcrf_out = np.empty((n_rows, 6), dtype=float)
     itrf_out = np.empty((n_rows, 6), dtype=float)
 
@@ -439,18 +456,27 @@ def compute_states(input_csv: Path,
                 chunk_times = [timestamps[int(index)] for index in chunk_indices]
 
                 r_teme_km, v_teme_km_s = propagate_teme_batch(sat, chunk_times)
-                r_gcrf_km, v_gcrf_km_s, r_itrf_km, v_itrf_km_s = (
-                    teme_to_gcrs_and_itrs_batch(
-                        r_teme_km,
-                        v_teme_km_s,
-                        chunk_times,
-                    )
+                (
+                    r_gcrf_km,
+                    v_gcrf_km_s,
+                    r_itrf_km,
+                    v_itrf_km_s,
+                    lat_deg,
+                    lon_deg,
+                    height_km,
+                ) = teme_to_gcrs_and_itrs_batch(
+                    r_teme_km,
+                    v_teme_km_s,
+                    chunk_times,
                 )
 
                 gcrf_out[chunk_indices, 0:3] = r_gcrf_km
                 gcrf_out[chunk_indices, 3:6] = v_gcrf_km_s
                 itrf_out[chunk_indices, 0:3] = r_itrf_km
                 itrf_out[chunk_indices, 3:6] = v_itrf_km_s
+                lat_out[chunk_indices] = lat_deg
+                lon_out[chunk_indices] = lon_deg
+                height_out[chunk_indices] = height_km
 
                 for index in chunk_indices:
                     row_idx = int(index)
@@ -465,6 +491,9 @@ def compute_states(input_csv: Path,
         "timestamp",
         "tle_epoch",
         "tle_age_days",
+        "lat_deg",
+        "lon_deg",
+        "height_km",
         "gcrf_x_km",
         "gcrf_y_km",
         "gcrf_z_km",
@@ -483,6 +512,9 @@ def compute_states(input_csv: Path,
             "timestamp": timestamp_values,
             "tle_epoch": tle_epoch_out,
             "tle_age_days": tle_age_days_out,
+            "lat_deg": lat_out,
+            "lon_deg": lon_out,
+            "height_km": height_out,
             "gcrf_x_km": gcrf_out[:, 0],
             "gcrf_y_km": gcrf_out[:, 1],
             "gcrf_z_km": gcrf_out[:, 2],
