@@ -66,6 +66,7 @@ from astropy.coordinates import (
 from astropy.time import Time
 from sgp4.api import Satrec
 from sgp4.api import jday
+from tqdm import tqdm
 
 # Global constants
 SPACE_TRACK_BASE_URL = "https://www.space-track.org"
@@ -362,6 +363,7 @@ def compute_states(input_csv: Path,
         raise ValueError('Input CSV must contain a column named "timestamp"')
     if df.empty:
         raise ValueError("Input CSV contains no rows")
+    print(f"Read {len(df)} rows from input CSV.")
 
     timestamps = [parse_utc_timestamp(value) for value in df["timestamp"]]
     start = min(timestamps) - timedelta(days=tle_buffer_days)
@@ -370,15 +372,29 @@ def compute_states(input_csv: Path,
     identity, password = load_spacetrack_credentials()
 
     if identity and password:
+        print(f"Space-Track: Welcome {identity}! Fetching TLEs for NORAD ID "
+              f"{norad_id} from {start.date()} to {stop.date()}...")
+        
         tles = fetch_historical_tles_spacetrack(norad_id, start, stop, identity, password)
+        
+        print(f"Fetched {len(tles)} TLE(s) from Space-Track spanning "
+              f"{tles[0].epoch} to {tles[-1].epoch}")
+        
     elif allow_celestrak_fallback:
+        print("Space-Track credentials not found. Falling back to the "
+              "latest CelesTrak TLE. This may not be close to the "
+              "requested timestamps.")
+        
         tles = fetch_current_tle_celestrak(norad_id)
+
+        print(f"Fetched 1 TLE from CelesTrak with epoch {tles[0].epoch}")
+        
     else:
         raise RuntimeError(
             "Historical closest-epoch TLE selection requires Space-Track "
             "credentials. Create a .env file in the project directory "
             "with SPACE_TRACK_IDENTITY and SPACE_TRACK_PASSWORD, or pass "
-            "--use-celestrack to use only the latest CelesTrak TLE."
+            "--use-celestrak to use only the latest CelesTrak TLE."
         )
 
     if not tles:
@@ -403,7 +419,11 @@ def compute_states(input_csv: Path,
     satrec_cache: dict[tuple[str, str], Satrec] = {}
     output_rows: list[dict[str, object]] = []
 
-    for row, when_utc in zip(df.to_dict(orient="records"), timestamps):
+    print("Propagating states for each timestamp...")
+    for row, when_utc in tqdm(zip(df.to_dict(orient="records"), timestamps),
+                              total=len(timestamps),
+                              desc="Propagating",
+                              unit="row"):
         tle = closest_tle(when_utc, tles)
         tle_key = (tle.line1, tle.line2)
 

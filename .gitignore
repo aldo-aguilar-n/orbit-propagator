@@ -12,6 +12,9 @@ venv/
 # Environment / secrets
 .env
 
+# Inputs
+*.csv
+
 # Generated output
 *_states.csv
 
