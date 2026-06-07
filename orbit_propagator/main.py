@@ -423,7 +423,6 @@ def compute_states(input_csv: Path,
     n_rows = len(timestamps)
 
     tle_epoch_out = [""] * n_rows
-    tle_source_out = [""] * n_rows
     tle_age_days_out = np.empty(n_rows, dtype=float)
     gcrf_out = np.empty((n_rows, 6), dtype=float)
     itrf_out = np.empty((n_rows, 6), dtype=float)
@@ -456,7 +455,6 @@ def compute_states(input_csv: Path,
                 for index in chunk_indices:
                     row_idx = int(index)
                     tle_epoch_out[row_idx] = tle.epoch.isoformat()
-                    tle_source_out[row_idx] = tle.source
                     tle_age_days_out[row_idx] = (
                         abs(tle.epoch - timestamps[row_idx]).total_seconds() / 86400.0
                     )
@@ -466,7 +464,6 @@ def compute_states(input_csv: Path,
     columns = [
         "timestamp",
         "tle_epoch",
-        "tle_source",
         "tle_age_days",
         "gcrf_x_km",
         "gcrf_y_km",
@@ -485,7 +482,6 @@ def compute_states(input_csv: Path,
         {
             "timestamp": timestamp_values,
             "tle_epoch": tle_epoch_out,
-            "tle_source": tle_source_out,
             "tle_age_days": tle_age_days_out,
             "gcrf_x_km": gcrf_out[:, 0],
             "gcrf_y_km": gcrf_out[:, 1],
