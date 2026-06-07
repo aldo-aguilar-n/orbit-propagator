@@ -6,8 +6,9 @@ SGP4 natively propagates TLEs in TEME. This app uses TEME only as an intermediat
 
 - `gcrf_*`: Astropy `GCRS`, used here as the GCRF-aligned geocentric celestial output frame
 - `itrf_*`: Astropy `ITRS`, used here as the ITRF/Earth-fixed output frame
+- Geodetic coordinates (lat, lon, height)
 
-Positions are in km and velocities are in km/s.
+Positions are in km and velocities are in km/s. Latitude and longitude are in degrees.
 
 ## Project layout
 
@@ -92,6 +93,11 @@ The output CSV contains exactly these columns:
 
 ```text
 timestamp
+tle_epoch
+tle_age_days
+lat_deg
+lon_deg
+height_km
 gcrf_x_km
 gcrf_y_km
 gcrf_z_km
