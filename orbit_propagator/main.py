@@ -65,12 +65,12 @@ from astropy.coordinates import (
 )
 from astropy.time import Time
 from sgp4.api import Satrec
-from sgp4.api import jday
 from tqdm import tqdm
 
 # Global constants
 SPACE_TRACK_BASE_URL = "https://www.space-track.org"
 CELESTRAK_GP_URL = "https://celestrak.org/NORAD/elements/gp.php"
+PROPAGATION_CHUNK_SIZE = 5000
 
 @dataclass(frozen=True)
 class TLERecord:
@@ -238,52 +238,49 @@ def deduplicate_and_sort_tles(records: Iterable[TLERecord]) -> list[TLERecord]:
 
     return unique
 
-def closest_tle(target_time: datetime, records: list[TLERecord]) -> TLERecord:
+def closest_tle_index(target_time: datetime, epochs: list[datetime]) -> int:
     """
-    Return the TLE whose epoch is closest to target_time.
+    Return the index of the TLE whose epoch is closest to target_time.
     """
-    if not records:
+    if not epochs:
         raise ValueError("No TLE records are available")
 
-    epochs = [record.epoch for record in records]
     idx = bisect.bisect_left(epochs, target_time)
 
-    candidates: list[TLERecord] = []
+    candidates: list[int] = []
     if idx > 0:
-        candidates.append(records[idx - 1])
-    if idx < len(records):
-        candidates.append(records[idx])
+        candidates.append(idx - 1)
+    if idx < len(epochs):
+        candidates.append(idx)
 
-    return min(candidates, key=lambda record: abs(record.epoch - target_time))
+    return min(candidates, key=lambda index: abs(epochs[index] - target_time))
 
-def propagate_teme(sat: Satrec, when_utc: datetime) -> tuple[np.ndarray, np.ndarray]:
+def propagate_teme_batch(sat: Satrec,
+                         when_utc: list[datetime]) -> tuple[np.ndarray, np.ndarray]:
     """
-    Propagate one TLE to one UTC timestamp using SGP4.
+    Propagate one TLE to multiple UTC timestamps using SGP4.
 
     Returns:
-        r_teme_km: TEME position vector [km]
-        v_teme_km_s: TEME velocity vector [km/s]
+        r_teme_km: TEME position vectors [km]
+        v_teme_km_s: TEME velocity vectors [km/s]
     """
-    jd, fr = jday(
-        when_utc.year,
-        when_utc.month,
-        when_utc.day,
-        when_utc.hour,
-        when_utc.minute,
-        when_utc.second + when_utc.microsecond * 1e-6,
-    )
+    obstime = Time(when_utc)
+    error_codes, position_km, velocity_km_s = sat.sgp4_array(obstime.jd1, obstime.jd2)
 
-    error_code, position_km, velocity_km_s = sat.sgp4(jd, fr)
-    if error_code != 0:
-        raise RuntimeError(f"SGP4 failed with error code {error_code} at {when_utc}")
+    if np.any(error_codes != 0):
+        bad_index = int(np.flatnonzero(error_codes != 0)[0])
+        raise RuntimeError(
+            f"SGP4 failed with error code {error_codes[bad_index]} "
+            f"at {when_utc[bad_index]}"
+        )
 
     return np.array(position_km, dtype=float), np.array(velocity_km_s, dtype=float)
 
-def teme_to_gcrs_and_itrs(r_teme_km: np.ndarray,
-                          v_teme_km_s: np.ndarray,
-                          when_utc: datetime) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def teme_to_gcrs_and_itrs_batch(r_teme_km: np.ndarray,
+                                v_teme_km_s: np.ndarray,
+                                when_utc: list[datetime]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Transform TEME position/velocity to GCRS/GCRF and ITRS/ITRF.
+    Transform TEME position/velocity arrays to GCRS/GCRF and ITRS/ITRF.
 
     Astropy names the geocentric celestial frame ``GCRS``. Its axes are
     aligned with GCRF for this application, so the output columns are
@@ -292,21 +289,21 @@ def teme_to_gcrs_and_itrs(r_teme_km: np.ndarray,
     output columns.
 
     Returns:
-        r_gcrs_km: GCRS/GCRF position vector [km]
-        v_gcrs_km_s: GCRS/GCRF velocity vector [km/s]
-        r_itrs_km: ITRS/ITRF position vector [km]
-        v_itrs_km_s: ITRS/ITRF velocity vector [km/s]
+        r_gcrs_km: GCRS/GCRF position vectors [km]
+        v_gcrs_km_s: GCRS/GCRF velocity vectors [km/s]
+        r_itrs_km: ITRS/ITRF position vectors [km]
+        v_itrs_km_s: ITRS/ITRF velocity vectors [km/s]
     """
     obstime = Time(when_utc)
 
     rep = CartesianRepresentation(
-        r_teme_km[0] * u.km,
-        r_teme_km[1] * u.km,
-        r_teme_km[2] * u.km,
+        r_teme_km[:, 0] * u.km,
+        r_teme_km[:, 1] * u.km,
+        r_teme_km[:, 2] * u.km,
         differentials=CartesianDifferential(
-            v_teme_km_s[0] * u.km / u.s,
-            v_teme_km_s[1] * u.km / u.s,
-            v_teme_km_s[2] * u.km / u.s,
+            v_teme_km_s[:, 0] * u.km / u.s,
+            v_teme_km_s[:, 1] * u.km / u.s,
+            v_teme_km_s[:, 2] * u.km / u.s,
         ),
     )
 
@@ -314,10 +311,10 @@ def teme_to_gcrs_and_itrs(r_teme_km: np.ndarray,
     gcrs = teme.transform_to(GCRS(obstime=obstime))
     itrs = teme.transform_to(ITRS(obstime=obstime))
 
-    r_gcrs = gcrs.cartesian.xyz.to_value(u.km)
-    v_gcrs = gcrs.cartesian.differentials["s"].d_xyz.to_value(u.km / u.s)
-    r_itrs = itrs.cartesian.xyz.to_value(u.km)
-    v_itrs = itrs.cartesian.differentials["s"].d_xyz.to_value(u.km / u.s)
+    r_gcrs = gcrs.cartesian.xyz.to_value(u.km).T
+    v_gcrs = gcrs.cartesian.differentials["s"].d_xyz.to_value(u.km / u.s).T
+    r_itrs = itrs.cartesian.xyz.to_value(u.km).T
+    v_itrs = itrs.cartesian.differentials["s"].d_xyz.to_value(u.km / u.s).T
 
     return (
         np.array(r_gcrs, dtype=float),
@@ -416,49 +413,55 @@ def compute_states(input_csv: Path,
                 file=sys.stderr,
             )
 
-    satrec_cache: dict[tuple[str, str], Satrec] = {}
-    output_rows: list[dict[str, object]] = []
+    tle_epochs = [tle.epoch for tle in tles]
+    satrecs = [tle.satrec for tle in tles]
+    tle_indices = np.array(
+        [closest_tle_index(timestamp, tle_epochs) for timestamp in timestamps],
+        dtype=int,
+    )
+    timestamp_values = df["timestamp"].tolist()
+    n_rows = len(timestamps)
+
+    tle_epoch_out = [""] * n_rows
+    tle_source_out = [""] * n_rows
+    tle_age_days_out = np.empty(n_rows, dtype=float)
+    gcrf_out = np.empty((n_rows, 6), dtype=float)
+    itrf_out = np.empty((n_rows, 6), dtype=float)
 
     print("Propagating states for each timestamp...")
-    for row, when_utc in tqdm(zip(df.to_dict(orient="records"), timestamps),
-                              total=len(timestamps),
-                              desc="Propagating",
-                              unit="row"):
-        tle = closest_tle(when_utc, tles)
-        tle_key = (tle.line1, tle.line2)
+    with tqdm(total=n_rows, desc="Propagating", unit="row") as progress_bar:
+        for tle_idx in np.unique(tle_indices):
+            tle = tles[int(tle_idx)]
+            sat = satrecs[int(tle_idx)]
+            matching_indices = np.flatnonzero(tle_indices == tle_idx)
 
-        sat = satrec_cache.get(tle_key)
-        if sat is None:
-            sat = tle.satrec
-            satrec_cache[tle_key] = sat
+            for start_idx in range(0, len(matching_indices), PROPAGATION_CHUNK_SIZE):
+                chunk_indices = matching_indices[start_idx:start_idx + PROPAGATION_CHUNK_SIZE]
+                chunk_times = [timestamps[int(index)] for index in chunk_indices]
 
-        r_teme_km, v_teme_km_s = propagate_teme(sat, when_utc)
-        r_gcrf_km, v_gcrf_km_s, r_itrf_km, v_itrf_km_s = teme_to_gcrs_and_itrs(
-            r_teme_km,
-            v_teme_km_s,
-            when_utc,
-        )
+                r_teme_km, v_teme_km_s = propagate_teme_batch(sat, chunk_times)
+                r_gcrf_km, v_gcrf_km_s, r_itrf_km, v_itrf_km_s = (
+                    teme_to_gcrs_and_itrs_batch(
+                        r_teme_km,
+                        v_teme_km_s,
+                        chunk_times,
+                    )
+                )
 
-        output_rows.append(
-            {
-                "timestamp": row["timestamp"],
-                "tle_epoch": tle.epoch.isoformat(),
-                "tle_source": tle.source,
-                "tle_age_days": abs(tle.epoch - when_utc).total_seconds() / 86400.0,
-                "gcrf_x_km": r_gcrf_km[0],
-                "gcrf_y_km": r_gcrf_km[1],
-                "gcrf_z_km": r_gcrf_km[2],
-                "gcrf_vx_km_s": v_gcrf_km_s[0],
-                "gcrf_vy_km_s": v_gcrf_km_s[1],
-                "gcrf_vz_km_s": v_gcrf_km_s[2],
-                "itrf_x_km": r_itrf_km[0],
-                "itrf_y_km": r_itrf_km[1],
-                "itrf_z_km": r_itrf_km[2],
-                "itrf_vx_km_s": v_itrf_km_s[0],
-                "itrf_vy_km_s": v_itrf_km_s[1],
-                "itrf_vz_km_s": v_itrf_km_s[2],
-            }
-        )
+                gcrf_out[chunk_indices, 0:3] = r_gcrf_km
+                gcrf_out[chunk_indices, 3:6] = v_gcrf_km_s
+                itrf_out[chunk_indices, 0:3] = r_itrf_km
+                itrf_out[chunk_indices, 3:6] = v_itrf_km_s
+
+                for index in chunk_indices:
+                    row_idx = int(index)
+                    tle_epoch_out[row_idx] = tle.epoch.isoformat()
+                    tle_source_out[row_idx] = tle.source
+                    tle_age_days_out[row_idx] = (
+                        abs(tle.epoch - timestamps[row_idx]).total_seconds() / 86400.0
+                    )
+
+                progress_bar.update(len(chunk_indices))
 
     columns = [
         "timestamp",
@@ -478,10 +481,30 @@ def compute_states(input_csv: Path,
         "itrf_vy_km_s",
         "itrf_vz_km_s",
     ]
-    pd.DataFrame(output_rows, columns=columns).to_csv(output_csv, index=False)
+    output_df = pd.DataFrame(
+        {
+            "timestamp": timestamp_values,
+            "tle_epoch": tle_epoch_out,
+            "tle_source": tle_source_out,
+            "tle_age_days": tle_age_days_out,
+            "gcrf_x_km": gcrf_out[:, 0],
+            "gcrf_y_km": gcrf_out[:, 1],
+            "gcrf_z_km": gcrf_out[:, 2],
+            "gcrf_vx_km_s": gcrf_out[:, 3],
+            "gcrf_vy_km_s": gcrf_out[:, 4],
+            "gcrf_vz_km_s": gcrf_out[:, 5],
+            "itrf_x_km": itrf_out[:, 0],
+            "itrf_y_km": itrf_out[:, 1],
+            "itrf_z_km": itrf_out[:, 2],
+            "itrf_vx_km_s": itrf_out[:, 3],
+            "itrf_vy_km_s": itrf_out[:, 4],
+            "itrf_vz_km_s": itrf_out[:, 5],
+        },
+        columns=columns,
+    )
+    output_df.to_csv(output_csv, index=False)
 
-    print(f"Wrote {len(output_rows)} propagated rows to {output_csv}")
-    print(f"Used {len(tles)} TLE(s) spanning {tles[0].epoch} to {tles[-1].epoch}")
+    print(f"Wrote {n_rows} propagated rows to {output_csv}")
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """
